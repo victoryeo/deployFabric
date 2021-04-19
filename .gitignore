@@ -1,6 +1,6 @@
-./config/crypto-config
-./config/MSP
-./config/MSP1
-./config/MSP2
-./config/genesis.block
-./config/server.crt
+config/crypto-config/
+config/MSP/
+config/MSP1/
+config/MSP2/
+config/genesis.block
+config/server.crt
