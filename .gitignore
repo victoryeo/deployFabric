@@ -4,3 +4,6 @@ config/MSP1/
 config/MSP2/
 config/genesis.block
 config/server.crt
+output/
+outputpeer1/
+artifacts/
