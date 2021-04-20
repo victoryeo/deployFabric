@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ca-client
+  labels:
+    name: ca-client
+spec:
+  hostname: ca-client
+  containers:
+    - name: ca-client
+      image: hyperledger/fabric-ca:1.4.8
+      command: ["/bin/bash"]
+      args: ["-c", "trap : TERM INT; sleep infinity & wait"]
+      env:
+        - name: DEBUG
+          value: "true"

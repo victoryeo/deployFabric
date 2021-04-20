@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-cli
+  labels:
+    name: init-cli
+spec:
+  hostname: cli
+  containers:
+  - name: init-cli
+    image: hyperledger/fabric-tools:2.2.0
+    command: ["/bin/bash"]
+    args: ["-c", "trap : TERM INT; sleep infinity & wait"]
+    volumeMounts:
+      - name: orderer-msp
+        mountPath: /etc/hyperledger/msps/orderer
+        readOnly: true
+      - name: consortium-config
+        mountPath: /etc/hyperledger/config
+        readOnly: true
+      - name: orderer0-tls
+        mountPath: /etc/hyperledger/tls/orderer0
+        readOnly: true
+  volumes:
+    - name: orderer-msp
+      configMap:
+        name: orderer.msp
+        items:
+        - key: ca
+          path: cacerts/cert.pem
+        - key: admin
+          path: admincerts/admin.pem
+        - key: ca
+          path: tlscacerts/cert.pem
+    - name: consortium-config
+      configMap:
+        name: consortium-config
+        items:
+        - key: configtx-yaml
+          path: configtx.yaml
+    - name: orderer0-tls
+      secret:
+        secretName: hlf--orderer0-orderer-tls
+        items:
+        - key: tls.crt
+          path: tls.crt          
