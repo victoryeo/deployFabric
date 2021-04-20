@@ -1,0 +1,30 @@
+Useful commands:
+
+# if get helm chart from helm repo
+helm repo add stable https://charts.helm.sh/stable
+helm search repo stable | grep hlf
+
+# install hlf-ca chart from helm repo
+helm install ca stable/hlf-ca --namespace bc -f ./ca_values.yaml  
+
+# check hostname inside a pod
+kubectl exec -it <podname> -n bc -- cat /etc/resolv.conf
+
+# check the events
+kubectl get events -n bc --sort-by='.metadata.creationTimestamp'
+
+# enter into pod shell
+kubectl exec -it <podname> -n bc -- bash
+
+# check service of the k8s cluster
+kubectl get svc  -n bc
+
+# get persistent volume
+kubectl get pv -n bc
+
+# list secrets
+kubectl get secrets -n bc
+
+# check gcloud disk
+gcloud  compute disks list 
+gcloud  compute disks delete  <disk name>
