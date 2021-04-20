@@ -2,106 +2,181 @@ Deploy Fabric to kubernetes
 
 We use helm v3.4.1
 
-Fabric  requires 3 types of nodes:
-CA, registers identities, issue enrollment Cert
-Orderer, establishes consensus
-Peer, stores the ledger and couchDB world state
+Fabric requires 3 types of nodes:
+CA: registers identities, issue enrollment Cert
+Orderer: establishes consensus
+Peer: stores the ledger and couchDB world state
 
-The file ca_values, peer1_values, peer2_value2 yaml are helm value files.
+The file ca_values, ord_values, peer1_values, peer2_value2 yaml contains helm values.
 
 # create namespace
 kubectl create namespace bc
 
-# if get helm chart from helm repo
-helm repo add stable https://charts.helm.sh/stable
-helm search repo stable | grep hlf
+# install postgres helm chart
+helm install postgres ./postgresql/ -n bc
 
 # delete existing helm release
 helm delete ca --namespace bc
 
-# install CA helm chart to kubernetes cluster
-helm install ca stable/hlf-ca --namespace bc -f ./ca_values.yaml    # from helm repo
-helm install ca ./hlf-ca/ --namespace bc -f ./ca_values.yaml        # from helm release
+# install HLF CA helm chart from helm release folder
+helm install ca ./hlf-ca/ --namespace bc -f ./ca_values.yaml
+# or completely override chart fullname 
+helm install ca ./hlf-ca/ --set fullnameOverride=ca-orderer-hlf-ca -n bc
 
-# save CA POD name
-export CA_POD=$(kubectl get pods --namespace bc -l "app=hlf-ca,release=ca" -o jsonpath="{.items[0].metadata.name}")
+# we use ca-client to do orderer registration , enrollment
+### CA admins register users, a process in which the CA admin gives an enroll ID and secret 
+(these are similar to a username and password) to an identity and assigns it a role and 
+any required attributes. The CA admin then gives this enroll ID and secret to the ultimate 
+user of the identity. The user can then execute a Fabric CA client enroll command using 
+this enroll ID and secret, returning the public/private key pair containing the role and 
+attributes assigned by the CA admin. ###
 
-# check CA POD log
-kubectl logs -n bc $CA_POD | grep "Listening on"
-# check the events
-kubectl get events -n bc
+# create a ca-client pod
+kubectl -n bc create -f ./config/ca-client-pod.yaml
 
-# check we don't have certificate
-kubectl exec -n bc $CA_POD -- cat /var/hyperledger/fabric-ca/msp/signcerts/cert.pem
-# create the fabric CA identity
-kubectl exec -n bc $CA_POD -- bash -c 'fabric-ca-client enroll -d -u http://$CA_ADMIN:$CA_PASSWORD@$SERVICE_DNS:7054'
-# check again, now we have certificate
-kubectl exec -n bc $CA_POD -- cat /var/hyperledger/fabric-ca/msp/signcerts/cert.pem
+# copy the pem file from ca-order to ca-client
+kubectl -n bc cp ca-orderer-hlf-ca-<random_string>:/var/hyperledger/fabric-ca/msp/certs/ca-orderer-hlf-ca-cert.pem ./output/tls-cert.pem
+kubectl -n bc cp ./output/tls-cert.pem ca-client:/tmp
 
-# register org adm in blockchain
-kubectl exec -n bc $CA_POD -- fabric-ca-client register --id.name org-admin --id.secret OrgAdm1nPW --id.attrs 'admin=true:ecert'
-# get identity of org admin
-kubectl exec -n bc $CA_POD -- fabric-ca-client identity list --id org-admin
+# enroll admin
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/admin fabric-ca-client enroll --tls.certfiles /tmp/tls-cert.pem -u http://admin:adminpw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054"
+# register an orderer as admin
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/admin fabric-ca-client register --tls.certfiles /tmp/tls-cert.pem --id.name orderer0 --id.type orderer --id.secret orderer0pw"
+# enroll orderer
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/orderer0 fabric-ca-client enroll --tls.certfiles /tmp/tls-cert.pem -u http://orderer0:orderer0pw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054 --csr.hosts orderer0-hlf-ord.bc.svc.cluster.local
+# enroll order for TLS
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/orderer0-tls fabric-ca-client enroll --tls.certfiles /tmp/tls-cert.pem --enrollment.profile tls -u http://orderer0:orderer0pw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054 --csr.hosts orderer0-hlf-ord.bc.svc.cluster.local
 
-# get the CA INGRESS address
-CA_INGRESS=$(kubectl get ingress -n bc -l "app=hlf-ca,release=ca" -o jsonpath="{.items[0].spec.rules[0].host}")
-# test with curl
-curl https://$CA_INGRESS/cainfo
+# copy out the MSP and pem files
+kubectl -n bc cp ca-client:/tmp ./output
 
-# enroll the org admin
-FABRIC_CA_CLIENT_HOME=./config ../fabric-samples/bin/fabric-ca-client enroll -u https://org-admin:OrgAdm1nPW@$CA_INGRESS -M ./MSP
+# delete ca-client pod after end of orderer enrollment
+kubectl -n bc delete -f ./config/ca-client-pod.yaml
 
-# create a secret to hold admin cert
-ORG_CERT=$(ls ./config/MSP/admincerts/cert.pem)
-kubectl create secret generic -n bc hlf--org-admincert --from-file=cert.pem=$ORG_CERT
+# create orderer0 orderer msp secret
+kubectl -n bc create secret generic orderer0-orderer.msp     
+  --from-file ca=$(ls ./output/orderer0/msp/cacerts/*.pem) 
+  --from-file secret=$(ls ./output/orderer0/msp/keystore/*_sk) 
+  --from-file cert=$(ls ./output/orderer0/msp/signcerts/*.pem)
+  --from-file tls_cert=$(ls ./output/orderer0-tls/msp/signcerts/*.pem) 
+  --from-file tls_secret=$(ls ./output/orderer0-tls/msp/keystore/*_sk)
+  --from-file admin_secret=$(ls ./output/admin/msp/keystore/*_sk)
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# find the admin key and create secret to hold admin key
-ORG_KEY=$(ls ./config/MSP/keystore/*_sk)
-kubectl create secret generic -n bc hlf--org-adminkey --from-file=key.pem=$ORG_KEY
+# create orderer0 orderer id-cert secret
+kubectl -n bc create secret generic hlf--orderer0-orderer-idcert 
+  --from-file=cert.pem=$(ls ./output/orderer0/msp/signcerts/*.pem)
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# create secret to hold CA cert
-CA_CERT=$(ls ./config/MSP/cacerts/*.pem)
-kubectl create secret generic -n bc hlf--ca-cert --from-file=cacert.pem=$CA_CERT
+# create orderer0 orderer id-key secret
+kubectl -n bc create secret generic hlf--orderer0-orderer-idkey 
+  --from-file=key.pem=$(ls ./output/orderer0/msp/keystore/*_sk) 
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# generate the genesis block and  channel
-cd .config
-create the configtx.yaml
-../../fabric-samples/bin/configtxgen -profile OrdererGenesis -outputBlock ./genesis.block -channelID mychannel
-# add genesis block as secret
-kubectl create secret generic -n bc hlf--genesis --from-file=genesis.block
+# create the rest of secret for orderer0
+kubectl -n bc create secret generic hlf--orderer0-orderer-cacert 
+  --from-file=cacert.pem=$(ls ./output/orderer0/msp/cacerts/*.pem) 
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--orderer0-orderer-tls 
+  --from-file=tls.crt=$(ls ./output/orderer0-tls/msp/signcerts/*.pem) 
+  --from-file=tls.key=$(ls ./output/orderer0-tls/msp/keystore/*_sk) 
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--orderer0-orderer-tlsrootcert 
+  --from-file=cacert.pem=$(ls ./output/orderer0/msp/cacerts/*.pem)  
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--orderer0-orderer-admincert 
+  --from-file=cert.pem=$(ls ./output/admin/msp/signcerts/*.pem) 
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# generate channel
-../../fabric-samples/bin/configtxgen -profile MyChannel -channelID mychannel -outputCreateChannelTx ./mychannel.tx
-# add channel as secret
-kubectl create secret generic -n bc hlf--channel --from-file=mychannel.tx
+# create orderer configmap
+kubectl -n bc create configmap orderer.msp 
+  --from-file ca=$(ls ./output/orderer0/msp/cacerts/*.pem) 
+  --from-file admin=$(ls ./output/admin/msp/signcerts/*.pem)
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# register orderer with CA
-# still executing command in config folder
-kubectl exec -n bc $CA_POD -- fabric-ca-client register --id.name ord --id.secret ord_pw --id.type orderer
-FABRIC_CA_CLIENT_HOME=./config fabric-ca-client enroll -d -u https://ord:ord_pw@$CA_INGRESS -M ord_MSP
+# create secret  for orderer
+kubectl -n bc create secret generic orderer.msp \
+  --from-file ca=$(ls ./output/orderer0/msp/cacerts/*.pem) 
+  --from-file admin=$(ls ./output/admin/msp/signcerts/*.pem) 
+  --from-file admin_secret=$(ls ./output/admin/msp/keystore/*_sk) 
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# install orderer helm chart 
-helm install orderer ./hlf-ord  --namespace bc -f ./ord_values.yaml
+# create consortium config configmap
+kubectl -n bc create configmap consortium-config 
+  --from-file configtx-yaml=./config/configtx.yaml 
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# first export NUM=1
-export NUM=1      # then export NUM=2
-# register peer with CA
-kubectl exec -n bc $CA_POD -- fabric-ca-client register --id.name peer${NUM} --id.secret peer${NUM}_pw --id.type peer
-FABRIC_CA_CLIENT_HOME=./config fabric-ca-client enroll -d -u https://peer${NUM}:peer${NUM}_pw@$CA_INGRESS -M peer${NUM}_MSP
+# create init pod
+kubectl -n bc create -f ./config/init-pod.yaml
 
-# save the peer cert in secret
-NODE_CERT=$(ls ./config/peer${NUM}_MSP/signcerts/*.pem)
-kubectl create secret generic -n bc hlf--peer${NUM}-idcert --from-file=cert.pem=${NODE_CERT}
+# create channel
+kubectl -n bc exec init-cli -- sh \
+  -c "FABRIC_CFG_PATH=/etc/hyperledger/config configtxgen -profile SampleMultiNodeEtcdRaft \ 
+  -channelID mychannel -outputBlock /tmp/genesis.block"
 
-# save the peer key in secret
-NODE_KEY=$(ls ./config/peer${NUM}_MSP/keystore/*_sk)
-kubectl create secret generic -n bc hlf--peer${NUM}-idkey --from-file=key.pem=${NODE_KEY}
+# copy genesis block
+kubectl -n bc cp init-cli:/tmp/genesis.block ./artifacts/channel/genesis.block
 
-# install coucdDB helm chart
-helm install -n cdb-peer${NUM} ./hlf-couchdb --namespace bc -f ./cdb-peer${NUM}_values.yaml
+# create secret to hold genesis 
+kubectl -n bc create secret generic hlf--genesis --from-file genesis.block=./artifacts/channel/genesis.block --dry-run=client -o yaml | kubectl apply -f -
 
-# install peer helm chart
-helm install peer${NUM} ./hlf-peer  --namespace bc -f ./peer${NUM}_values.yaml
+# delete the pod
+kubectl -n bc delete -f ./config/init-pod.yaml
+
+# install HLF orderer helm chart from helm release folder
+helm install orderer ./hlf-ord/ --namespace bc -f ./ord_values.yaml
+helm install orderer ./hlf-ord/ --set fullnameOverride=orderer0-hlf-ca -n bc
+
+# create ca client pod
+kubectl -n bc create -f ./config/ca-client-pod.yaml
+
+# copy msp files
+kubectl -n bc cp ./output ca-client:/tmp/clients
+
+# Register a peer
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/clients/admin fabric-ca-client register --tls.certfiles /tmp/clients/tls-cert.pem --id.name peer1 --id.type peer --id.secret peer1pw"
+
+# Enroll as a peer
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/clients/peer1 fabric-ca-client enroll --tls.certfiles /tmp/clients/tls-cert.pem -u http://peer1:peer1pw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054 --csr.hosts peer1-orderer0-hlf-peer.bc.svc.cluster.local"
+
+# Enroll as a peer for TLS
+kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/clients/peer1-tls fabric-ca-client enroll --tls.certfiles /tmp/clients/tls-cert.pem --enrollment.profile tls -u http://peer1:peer1pw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054 --csr.hosts peer1-orderer0-hlf-peer.bc.svc.cluster.local"
+
+# copy the msp files
+kubectl -n bc cp ca-client:/tmp/clients ./outputpeer1
+
+# peer cert
+kubectl -n ${NAMESPACE} create secret generic ${PEER_NAME}-${ORG_NAME}.msp \
+  --from-file ca=${CACERT_FILE} --from-file secret=${SK_FILE} --from-file cert=${CERT_FILE} --from-file admin=${ADMIN_FILE} \
+  --from-file tls_cert=${TLS_CERT_FILE} --from-file tls_secret=${TLS_SK_FILE} --from-file admin_secret=${ADMIN_SK_FILE} \
+  --from-file config=${MSP_CONFIG} --dry-run=client -o yaml | kubectl apply -f -
+
+# create peer msp secret
+kubectl -n bc create secret generic peer1-org1.msp     
+  --from-file ca=$(ls ./outputpeer1/peer1/msp/cacerts/*.pem) 
+  --from-file secret=$(ls ./outputpeer1/peer1/msp/keystore/*_sk) 
+  --from-file cert=$(ls ./outputpeer1/peer1/msp/signcerts/*.pem)
+  --from-file tls_cert=$(ls ./outputpeer1/peer1-tls/msp/signcerts/*.pem) 
+  --from-file tls_secret=$(ls ./outputpeer1/peer1-tls/msp/keystore/*_sk)
+  --from-file admin_secret=$(ls ./outputpeer1/admin/msp/keystore/*_sk)
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# create secrets for peer
+kubectl -n bc create secret generic hlf--peer1-org1-idcert --from-file=cert.pem=$(ls ./outputpeer1/peer1/msp/signcerts/*.pem) --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-idkey --from-file=key.pem=${SK_FILE} --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-cacert --from-file=cacert.pem=${CACERT_FILE} --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-tls --from-file=tls.crt=${TLS_CERT_FILE} --from-file=tls.key=${TLS_SK_FILE} --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-tlsrootcert --from-file=cacert.pem=${CACERT_FILE} --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-admincert --from-file=cert.pem=${ADMIN_FILE} --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n bc create secret generic hlf--${PEER_NAME}-${ORG_NAME}-adminkey --from-file=key.pem=${ADMIN_SK_FILE} --dry-run=client -o yaml | kubectl apply -f -
+
+# install couchdb helm chart from helm release folder
+helm install couchdb ./hlf-couchdb/ --set fullnameOverride=cdb-peer-org1-hlf-couchdb -n bc
+# install HLF peer helm chart from helm release folder
+helm install peer ./hlf-peer/ --set fullnameOverride=peer-org1-hlf-peer -n bc
+
+
 
 # save the PEER POD name
 PEER_POD=$(kubectl get pods -n bc -l "app=hlf-peer,release=peer${NUM}" -o jsonpath="{.items[0].metadata.name}")
@@ -115,7 +190,3 @@ kubectl exec -n bc $PEER_POD -- bash -c 'CORE_PEER_MSPCONFIGPATH=$ADMIN_MSP_PATH
 
 # check channel list
 kubectl exec $PEER_POD -n bc -- peer channel list
-
-# check gcloud disk
-gcloud  compute disks delete 
-gcloud  compute disks delete  <disk name>
