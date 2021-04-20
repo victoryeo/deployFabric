@@ -85,11 +85,6 @@ spec:
             - name: ord-port
               containerPort: 7050
               protocol: TCP
-            {{- if eq .Values.ord.metrics.provider "prometheus" }}
-            - name: metrics
-              containerPort: 9443
-              protocol: TCP
-            {{- end }}
           livenessProbe:
             exec:
               command:
@@ -105,7 +100,7 @@ spec:
               - /var/hyperledger
             initialDelaySeconds: 15
           command:
-            - bash
+            - sh
             - -c
             - |
 
