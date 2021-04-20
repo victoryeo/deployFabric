@@ -1,30 +1,33 @@
+fullnameOverride: orderer0-hlf-ord
+nodeName: orderer0
+orgName: orderer
+
+maintenanceMode: false
+
 image:
-  tag: 1.2.0
+  tag: 2.2.0
 
 persistence:
+  enabled: true
+  storageClass: standard
   accessMode: ReadWriteOnce
   size: 1Gi
 
 ord:
   type: raft
-  ## MSP ID of the Orderer
-  mspID: MSP
+  mspID: orderer
+  tls:
+    server:
+      enabled: "true"
+affinity:
+  nodeAffinity:
 
 secrets:
   ord:
-    cert: hlf--ord-idcert
-    key: hlf--ord-idkey
-    caCert: hlf--ca-cert
+    cert: hlf--orderer0-orderer-idcert
+    key: hlf--orderer0-orderer-idkey
+    caCert: hlf--orderer0-orderer-cacert
+    tls: hlf--orderer0-orderer-tls
+    tlsRootCert: hlf--orderer0-orderer-tlsrootcert
   genesis: hlf--genesis
-  adminCert: hlf--org-admincert
-  caServerTls: ca--tls
-
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 95
-        podAffinityTerm:
-          topologyKey: "kubernetes.io/hostname"
-          labelSelector:
-            matchLabels:
-              app: hlf-ord
+  adminCert: hlf--orderer0-orderer-admincert
