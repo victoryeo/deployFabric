@@ -1,42 +1,22 @@
+fullnameOverride: ca-orderer-hlf-ca
+nodeName: ca
+orgName: orderer
+
+maintenanceMode: false
+
 image:
-  tag: 1.2.0
+  tag: 1.4.8
 
 ingress:
-  enabled: true
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    certmanager.k8s.io/cluster-issuer: "letsencrypt-production"
-  path: /
-  hosts:
-    # TODO: Change this back
-    - example.test
-  tls:
-    - secretName: ca--tls
-      hosts:
-        # TODO: Change this back
-        - example.test
+  enabled: false
 
 persistence:
+  enabled: true
+  storageClass: standard
   accessMode: ReadWriteOnce
   size: 1Gi
 
-caName: ca
-
-postgresql:
-  enabled: false
-
-config:
-  hlfToolsVersion: 1.2.0
-  csr:
-    names:
-      c: MY
-      st: KL
-      l:
-      o: "mytech"
-      ou: Blockchain
-  affiliations:
-    mytech: []
-
+replicas: 1
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:
@@ -44,4 +24,30 @@ affinity:
         podAffinityTerm:
           topologyKey: "kubernetes.io/hostname"
           labelSelector:
-            matchLabels:
+            matchLabels:         
+  podAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchLabels:
+          app: postgresql
+          release: ca
+      topologyKey: "kubernetes.io/hostname"            
+caName: ca-orderer
+
+externalDatabase:
+  type: postgres
+  host: postgres-postgresql
+  port: 5432
+  username: root
+  password: db_password
+  database: fabric_ca
+  ssl-mode: disable 
+
+config:
+  hlfToolsVersion: 1.4.8
+  debug: false
+  enableTLSWithoutIngress: true
+  useIssuedTLS: true
+  useIssuedCACert: true
+
+csrHosts: ca-orderer,ca-orderer-hlf-ca,ca-orderer-hlf-ca.bc.svc.cluster.local,localhost
