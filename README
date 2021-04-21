@@ -1,13 +1,18 @@
 Deploy Fabric to kubernetes
 
-We use helm v3.4.1
-
+Introduction:
 Fabric requires 3 types of nodes:
 CA: registers identities, issue enrollment Cert
 Orderer: establishes consensus
 Peer: stores the ledger and couchDB world state
 
+Files:
 The file ca_values, ord_values, peer1_values, peer2_value2 yaml contains helm values.
+The hlf-ca, hlf-couchdb, hlf-ord, hlf-peer, postgresql folders are Helm chart files
+The config folder contains yaml files for creating pods.
+We use helm v3.4.1
+
+Sequence:
 
 # create namespace
 kubectl create namespace bc
@@ -23,8 +28,9 @@ helm install ca ./hlf-ca/ --namespace bc -f ./ca_values.yaml
 # or completely override chart fullname 
 helm install ca ./hlf-ca/ --set fullnameOverride=ca-orderer-hlf-ca -n bc
 
-# we use ca-client to do orderer registration , enrollment
-### CA admins register users, a process in which the CA admin gives an enroll ID and secret 
+# we use ca-client to do orderer registration, enrollment
+### 
+CA admins register users, a process in which the CA admin gives an enroll ID and secret 
 (these are similar to a username and password) to an identity and assigns it a role and 
 any required attributes. The CA admin then gives this enroll ID and secret to the ultimate 
 user of the identity. The user can then execute a Fabric CA client enroll command using 
@@ -35,7 +41,7 @@ attributes assigned by the CA admin.
 # create a ca-client pod
 kubectl -n bc create -f ./config/ca-client-pod.yaml
 
-# copy the pem file from ca-order to ca-client
+# copy the pem file from ca-orderer to ca-client
 kubectl -n bc cp ca-orderer-hlf-ca-<random_string>:/var/hyperledger/fabric-ca/msp/certs/ca-orderer-hlf-ca-cert.pem ./output/tls-cert.pem
 kubectl -n bc cp ./output/tls-cert.pem ca-client:/tmp
 
@@ -90,13 +96,13 @@ kubectl -n bc create secret generic hlf--orderer0-orderer-admincert
   --from-file=cert.pem=$(ls ./output/admin/msp/signcerts/*.pem) 
   --dry-run=client -o yaml | kubectl apply -f -
 
-# create orderer configmap
+# create orderer configmap for orderer MSP
 kubectl -n bc create configmap orderer.msp 
   --from-file ca=$(ls ./output/orderer0/msp/cacerts/*.pem) 
   --from-file admin=$(ls ./output/admin/msp/signcerts/*.pem)
   --dry-run=client -o yaml | kubectl apply -f -
 
-# create secret  for orderer
+# create secret for orderer MSP
 kubectl -n bc create secret generic orderer.msp \
   --from-file ca=$(ls ./output/orderer0/msp/cacerts/*.pem) 
   --from-file admin=$(ls ./output/admin/msp/signcerts/*.pem) 
@@ -108,7 +114,7 @@ kubectl -n bc create configmap consortium-config
   --from-file configtx-yaml=./config/configtx.yaml 
   --dry-run=client -o yaml | kubectl apply -f -
 
-# create init pod
+# create init pod for using in genesis block creation
 kubectl -n bc create -f ./config/init-pod.yaml
 
 # create genesis block
@@ -116,7 +122,7 @@ kubectl -n bc exec init-cli -- sh \
   -c "FABRIC_CFG_PATH=/etc/hyperledger/config configtxgen -profile SampleMultiNodeEtcdRaft \ 
   -channelID mychannel -outputBlock /tmp/genesis.block"
 
-# copy genesis block
+# copy out genesis block
 kubectl -n bc cp init-cli:/tmp/genesis.block ./artifacts/channel/genesis.block
 
 # create secret to hold genesis 
@@ -132,7 +138,7 @@ helm install orderer ./hlf-ord/ --set fullnameOverride=orderer0-hlf-ca -n bc
 # create ca client pod
 kubectl -n bc create -f ./config/ca-client-pod.yaml
 
-# copy msp files
+# copy in msp files
 kubectl -n bc cp ./output ca-client:/tmp/clients
 
 # Register a peer
@@ -144,10 +150,10 @@ kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/clients/peer1 
 # Enroll as a peer for TLS
 kubectl -n bc exec ca-client -- sh -c "FABRIC_CA_CLIENT_HOME=/tmp/clients/peer1-tls fabric-ca-client enroll --tls.certfiles /tmp/clients/tls-cert.pem --enrollment.profile tls -u http://peer1:peer1pw@ca-orderer-hlf-ca.bc.svc.cluster.local:7054 --csr.hosts peer1-orderer0-hlf-peer.bc.svc.cluster.local"
 
-# copy the msp files
+# copy out the msp files
 kubectl -n bc cp ca-client:/tmp/clients ./outputpeer1
 
-# create peer msp secret
+# create secret to hold peer msp 
 kubectl -n bc create secret generic peer1-org1.msp     
   --from-file ca=$(ls ./outputpeer1/peer1/msp/cacerts/*.pem) 
   --from-file secret=$(ls ./outputpeer1/peer1/msp/keystore/*_sk | head -1) 
@@ -169,7 +175,7 @@ kubectl -n bc create secret generic hlf--peer1-org1-signcert --from-file=cert.pe
 
 kubectl -n bc create secret generic hlf--pee1-org1-adminkey --from-file=key.pem=$(ls ./outputpeer1/admin/msp/keystore/*_sk | head -1) --dry-run=client -o yaml | kubectl apply -f -
 
-# install couchdb helm chart from helm release folder
+# install Couchdb helm chart from helm release folder
 helm install couchdb ./hlf-couchdb/ --set fullnameOverride=cdb-peer-org1-hlf-couchdb -n bc
 # install HLF peer helm chart from helm release folder
 helm install peer ./hlf-peer/ --set fullnameOverride=peer-org1-hlf-peer -n bc
@@ -192,6 +198,10 @@ kubectl -n bc exec -it cli -- bash -c \
     -o orderer0-hlf-ord.bc.svc.cluster.local:7050 \
     --outputBlock /etc/hyperledger/channels/mychannel.block \ 
     --cafile /etc/hyperledger/msps/orderer/cacerts/cert.pem --tls"
+
+Error:
+Cannot run peer because error when setting up MSP of type bccsp from directory 
+/etc/hyperledger/msps/org1: KeyMaterial not found in SigningIdentityInfo
 
 kubectl -n bc cp cli:/etc/hyperledger/channels/mychannel.block \
   ./artifacts/channel/mychannel.block
