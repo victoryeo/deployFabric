@@ -21,6 +21,7 @@ kubectl get svc  -n bc
 
 # get persistent volume
 kubectl get pv -n bc
+gcloud  compute disks list
 
 # list secrets
 kubectl get secrets -n bc
