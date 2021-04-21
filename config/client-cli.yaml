@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cli
+spec:
+  hostname: cli
+  containers:
+  - name: cli
+    image: hyperledger/fabric-tools:2.2.0
+    command: ["/bin/bash"]
+    args: ["-c", "trap : TERM INT; sleep infinity & wait"]
+    volumeMounts:
+    - name: consortium-config
+      mountPath: /etc/hyperledger/config
+      readOnly: true
+    - name: orderer-msp
+      mountPath: /etc/hyperledger/msps/orderer
+      readOnly: true
+    - name: org1-msp
+      mountPath: /etc/hyperledger/msps/org1
+      readOnly: true
+
+    env:
+    - name: FABRIC_CFG_PATH
+      value: /etc/hyperledger/fabric
+    - name: CORE_PEER_ADDRESS
+      value: peer1-org1-hlf-peer.bc.svc.cluster.local:7051
+    - name: CORE_PEER_MSPCONFIGPATH
+      value: /etc/hyperledger/msps/org1
+    - name: CORE_PEER_LOCALMSPID
+      value: org1
+    - name: CORE_PEER_TLS_ENABLED
+      value: "true"
+    - name: CORE_PEER_TLS_ROOTCERT_FILE
+      value: /etc/hyperledger/msps/org1/cacerts/cert.pem
+    - name: GODEBUG
+      value: netdns=go
+    - name: GOPATH
+      value: /opt/gopath
+
+  volumes:
+  - name: orderer-msp
+    secret:
+      secretName: orderer0-orderer.msp
+      items:
+      - key: ca
+        path: cacerts/cert.pem
+      - key: cert
+        path: signcerts/cert.pem 
+      - key: admin_secret
+        path: keystore/secret_sk     
+      - key: config
+        path: config.yaml           
+  - name: org1-msp
+    secret:
+      secretName: peer1-org1.msp
+      items:
+      - key: ca
+        path: cacerts/cert.pem
+      - key: cert
+        path: signcerts/cert.pem
+      - key: admin_secret
+        path: keystore/secret_sk    
+      - key: config
+        path: config.yaml       
+  - name: consortium-config
+    configMap:
+      name: consortium-config
+      items:
+      - key: configtx-yaml
+        path: configtx.yaml
